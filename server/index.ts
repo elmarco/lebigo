@@ -1,38 +1,93 @@
-import { boolean, capsule, endpoint, mutation, query, string, table, text } from "lakebed/server";
-import { cleanTodoText } from "../shared/todo";
+import { capsule, mutation, query, string, table } from "lakebed/server";
+
+const CHUNK_SIZE = 60000;
 
 export default capsule({
   name: "lebigo",
 
   schema: {
-    todos: table({
-      text: string(),
-      done: boolean().default(false),
-      ownerId: string()
-    })
+    recordings: table({
+      mimeType: string(),
+      ownerId: string(),
+      displayName: string(),
+      picture: string(),
+      chunkCount: string(),
+      duration: string(),
+    }),
+    audioChunks: table({
+      recordingId: string(),
+      chunkIndex: string(),
+      data: string(),
+    }),
   },
 
   queries: {
-    todos: query((ctx) =>
-      ctx.db.todos
-        .where("ownerId", ctx.auth.userId)
-        .orderBy("createdAt", "desc")
-        .all()
-    )
+    allRecordings: query((ctx) => {
+      const recs = ctx.db.recordings
+        .orderBy("updatedAt", "desc")
+        .all();
+      return recs.map((rec) => {
+        const chunks = ctx.db.audioChunks
+          .where("recordingId", rec.id)
+          .orderBy("chunkIndex", "asc")
+          .all();
+        const audioData = chunks.map((c) => c.data).join("");
+        return { ...rec, audioData };
+      });
+    }),
   },
 
   mutations: {
-    addTodo: mutation((ctx, text: string) => {
-      const cleanText = cleanTodoText(text);
-      if (!cleanText) {
-        return;
-      }
+    saveRecording: mutation(
+      (ctx, audioData: string, mimeType: string, displayName: string, picture: string, duration: string) => {
+        const existingRecs = ctx.db.recordings
+          .where("ownerId", ctx.auth.userId)
+          .all();
+        for (const rec of existingRecs) {
+          const chunks = ctx.db.audioChunks
+            .where("recordingId", rec.id)
+            .all();
+          for (const chunk of chunks) {
+            ctx.db.audioChunks.delete(chunk.id);
+          }
+          ctx.db.recordings.delete(rec.id);
+        }
 
-      ctx.db.todos.insert({ text: cleanText, ownerId: ctx.auth.userId });
-    })
+        const totalChunks = Math.ceil(audioData.length / CHUNK_SIZE);
+        const rec = ctx.db.recordings.insert({
+          mimeType,
+          ownerId: ctx.auth.userId,
+          displayName,
+          picture,
+          chunkCount: String(totalChunks),
+          duration,
+        });
+
+        for (let i = 0; i < totalChunks; i++) {
+          ctx.db.audioChunks.insert({
+            recordingId: rec.id,
+            chunkIndex: String(i).padStart(4, "0"),
+            data: audioData.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+          });
+        }
+      }
+    ),
+
+    deleteRecording: mutation((ctx) => {
+      const existingRecs = ctx.db.recordings
+        .where("ownerId", ctx.auth.userId)
+        .all();
+      for (const rec of existingRecs) {
+        const chunks = ctx.db.audioChunks
+          .where("recordingId", rec.id)
+          .all();
+        for (const chunk of chunks) {
+          ctx.db.audioChunks.delete(chunk.id);
+        }
+        ctx.db.recordings.delete(rec.id);
+      }
+    }),
   },
 
-  endpoints: {
-    status: endpoint({ method: "GET", path: "/api/status" }, () => text("ok"))
-  }
+  endpoints: {},
 });
