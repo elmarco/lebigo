@@ -1,4 +1,4 @@
-import { capsule, mutation, query, string, table } from "lakebed/server";
+import { capsule, endpoint, mutation, query, string, table, text } from "lakebed/server";
 
 const CHUNK_SIZE = 60000;
 
@@ -23,17 +23,9 @@ export default capsule({
 
   queries: {
     allRecordings: query((ctx) => {
-      const recs = ctx.db.recordings
+      return ctx.db.recordings
         .orderBy("updatedAt", "desc")
         .all();
-      return recs.map((rec) => {
-        const chunks = ctx.db.audioChunks
-          .where("recordingId", rec.id)
-          .orderBy("chunkIndex", "asc")
-          .all();
-        const audioData = chunks.map((c) => c.data).join("");
-        return { ...rec, audioData };
-      });
     }),
   },
 
@@ -89,5 +81,15 @@ export default capsule({
     }),
   },
 
-  endpoints: {},
+  endpoints: {
+    audio: endpoint({ method: "GET", path: "/api/audio" }, (ctx, req) => {
+      const id = req.query.get("id");
+      if (!id) return text("");
+      const chunks = ctx.db.audioChunks
+        .where("recordingId", id)
+        .orderBy("chunkIndex", "asc")
+        .all();
+      return text(chunks.map((c) => c.data).join(""));
+    }),
+  },
 });

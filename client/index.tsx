@@ -1,5 +1,4 @@
 import {
-  SignInWithGoogle,
   signInWithGoogle,
   signOut,
   useAuth,
@@ -13,7 +12,6 @@ import { tarCreate } from "../shared/tar";
 
 type RecordingRow = {
   id: string;
-  audioData: string;
   mimeType: string;
   ownerId: string;
   displayName: string;
@@ -119,15 +117,14 @@ function RecordingCard({ rec, isOwn, colorIndex }: { rec: RecordingRow; isOwn: b
   const deleteRecording = useMutation<[], void>("deleteRecording");
   const [url, setUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [loading, setLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const colors = CARD_COLORS[colorIndex % CARD_COLORS.length];
 
   useEffect(() => {
-    const objectUrl = base64ToObjectUrl(rec.audioData, rec.mimeType);
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [rec.audioData, rec.mimeType]);
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [url]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -137,20 +134,35 @@ function RecordingCard({ rec, isOwn, colorIndex }: { rec: RecordingRow; isOwn: b
     return () => audio.removeEventListener("ended", onEnded);
   }, [url]);
 
-  const togglePlay = useCallback(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
+  const fetchAudio = useCallback(async (): Promise<string> => {
+    if (url) return url;
+    setLoading(true);
+    try {
+      const res = await fetch(`api/audio?id=${rec.id}`);
+      const base64 = await res.text();
+      const objectUrl = base64ToObjectUrl(base64, rec.mimeType);
+      setUrl(objectUrl);
+      return objectUrl;
+    } finally {
+      setLoading(false);
+    }
+  }, [url, rec.id, rec.mimeType]);
+
+  const togglePlay = useCallback(async () => {
     if (playing) {
-      audio.pause();
-      audio.currentTime = 0;
+      const audio = audioRef.current;
+      if (audio) { audio.pause(); audio.currentTime = 0; }
       setPlaying(false);
-    } else {
+      return;
+    }
+    const audioUrl = await fetchAudio();
+    const audio = audioRef.current;
+    if (audio) {
+      audio.src = audioUrl;
       void audio.play();
       setPlaying(true);
     }
-  }, [playing]);
-
-  if (!url) return null;
+  }, [playing, fetchAudio]);
 
   return (
     <div className={`relative flex flex-col items-center gap-3 rounded-2xl border-2 ${colors.border} ${colors.bg} backdrop-blur-sm p-5 shadow-sm transition-shadow hover:shadow-md`}>
@@ -179,13 +191,14 @@ function RecordingCard({ rec, isOwn, colorIndex }: { rec: RecordingRow; isOwn: b
 
       <button
         type="button"
-        onClick={togglePlay}
+        disabled={loading}
+        onClick={() => void togglePlay()}
         className={`flex h-11 w-11 items-center justify-center rounded-full text-white shadow-md transition-all active:scale-95 ${colors.btnBg} ${colors.hoverBg}`}
       >
-        {playing ? <StopIcon /> : <PlayIcon />}
+        {loading ? <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : playing ? <StopIcon /> : <PlayIcon />}
       </button>
 
-      <audio ref={audioRef} src={url} preload="auto" />
+      <audio ref={audioRef} preload="none" />
     </div>
   );
 }
@@ -342,11 +355,15 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 40) || "anonyme";
 }
 
-function downloadAllAsTar(recordings: RecordingRow[]) {
+async function downloadAllAsTar(recordings: RecordingRow[]) {
   const ext = (mime: string) => mime.includes("webm") ? "webm" : mime.includes("ogg") ? "ogg" : "audio";
-  const entries = recordings.map((rec) => ({
-    name: `${sanitizeFilename(rec.displayName)}_${rec.id.slice(0, 8)}.${ext(rec.mimeType)}`,
-    data: base64ToBytes(rec.audioData),
+  const entries = await Promise.all(recordings.map(async (rec) => {
+    const res = await fetch(`api/audio?id=${rec.id}`);
+    const base64 = await res.text();
+    return {
+      name: `${sanitizeFilename(rec.displayName)}_${rec.id.slice(0, 8)}.${ext(rec.mimeType)}`,
+      data: base64ToBytes(base64),
+    };
   }));
   const tar = tarCreate(entries);
   const blob = new Blob([tar], { type: "application/x-tar" });
@@ -443,7 +460,13 @@ export function App() {
             </h1>
             <div className="flex items-center gap-3">
               {!auth.isLoading && auth.isGuest ? (
-                <SignInWithGoogle className="shrink-0 rounded-full bg-white px-4 py-1.5 text-sm font-medium text-gray-600 shadow-sm ring-1 ring-gray-200 hover:ring-gray-300" />
+                <button
+                  type="button"
+                  onClick={() => signInWithGoogle()}
+                  className="shrink-0 rounded-full bg-white px-4 py-1.5 text-sm font-medium text-gray-600 shadow-sm ring-1 ring-gray-200 hover:ring-gray-300"
+                >
+                  Se connecter
+                </button>
               ) : !auth.isLoading ? (
                 <>
                   <Avatar name={auth.displayName} picture={auth.picture} />
@@ -476,7 +499,7 @@ export function App() {
               }}
             />
             <p className="relative text-center text-gray-800 text-base font-medium leading-relaxed" style={{ zIndex: 1 }}>
-              Partagez un souvenir, une anecdote, ou tout autre revendication, le bigo vous écoute! Mais vous avez <span className="text-red-500 font-bold">1 minute</span>, et pas plus.
+	    Partagez un souvenir, une anecdote ou toute autre revendication, le bigo vous écoute ! Mais attention, vous avez <span className="text-red-500 font-bold">1 minute</span>, pas plus.
             </p>
           </div>
 
